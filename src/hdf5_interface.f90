@@ -54,6 +54,8 @@ module hdf5_interface
                         hdf_get_real3d,&
                         hdf_get_string
 
+    !> add attribute
+    generic    :: adda => hdf_adda_string
 
     !> private methods
     procedure,private :: hdf_add_group
@@ -75,6 +77,7 @@ module hdf5_interface
     procedure,private :: hdf_get_real3d
     procedure,private :: hdf_get_string
     procedure,private :: hdf_add_string
+    procedure,private :: hdf_adda_string
   end type hdf5_file
 
 contains
@@ -174,7 +177,7 @@ contains
     character(*), intent(in) :: name
 
     integer :: ierr
-    
+
     call h5ldelete_f(self%lid, name, ierr)
 
   end subroutine hdf_delete
@@ -211,7 +214,18 @@ contains
 
   end subroutine hdf_add_group
   !=============================================================================
+  subroutine hdf_adda_string(self, path, name, value)
+    class(hdf5_file), intent(in) :: self
+    character(*), intent(in) :: path
+    character(*), intent(in) :: name
+    character(*), intent(in) :: value
 
+    integer :: ierr
+
+    if(.not.self%exist(path)) call self%add(path)
+    call h5ltset_attribute_string_f(self%lid, path, name, value, ierr)
+
+  end subroutine hdf_adda_string
   !=============================================================================
   subroutine hdf_add_int(self,dname,value)
     class(hdf5_file), intent(in) :: self
