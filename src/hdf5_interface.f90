@@ -1,29 +1,35 @@
 !> hdf5_interface
 module hdf5_interface
-
   use H5LT
-
   implicit none
 
-  public :: hdf5_file, toLower
+  public :: hdf5_file
 
   private
 
   type :: hdf5_file
 
+    character(:), allocatable :: filename
     integer(HID_T) :: lid    !< location identifier
     integer(HID_T) :: gid    !< group identifier
     integer(HID_T) :: glid   !< group location identifier
+    logical :: is_init = .FALSE.
 
 
   contains
-    !> initialize HDF5 file
-    procedure :: initialize => hdf_initialize
-    procedure :: finalize   => hdf_finalize
+    !> open/close HDF5 file
+    procedure :: open  => hdf_open_file
+    procedure :: close => hdf_close_file
 
-    !> open and close hdf5 group
-    procedure :: open       => hdf_open_group
-    procedure :: close      => hdf_close_group
+    !> open/close HDF5 group
+    procedure :: open_group  => hdf_open_group
+    procedure :: close_group => hdf_close_group
+
+    !> HDF5 group/dataset exist status
+    procedure :: exist => hdf_exist
+
+    !> delete HDF5 group/dataset
+    procedure :: delete => hdf_delete
 
     !> add group or dataset integer/real 0-3d
     generic   :: add => hdf_add_group,&
@@ -34,7 +40,8 @@ module hdf5_interface
                         hdf_add_real,&
                         hdf_add_real1d,&
                         hdf_add_real2d,&
-                        hdf_add_real3d
+                        hdf_add_real3d,&
+                        hdf_add_string
 
     !> get dataset integer/real 0-3d
     generic   :: get => hdf_get_int,&
@@ -44,7 +51,8 @@ module hdf5_interface
                         hdf_get_real,&
                         hdf_get_real1d,&
                         hdf_get_real2d,&
-                        hdf_get_real3d
+                        hdf_get_real3d,&
+                        hdf_get_string
 
 
     !> private methods
@@ -65,13 +73,14 @@ module hdf5_interface
     procedure,private :: hdf_get_real2d
     procedure,private :: hdf_add_real3d
     procedure,private :: hdf_get_real3d
+    procedure,private :: hdf_get_string
+    procedure,private :: hdf_add_string
   end type hdf5_file
 
 contains
   !=============================================================================
-  subroutine hdf_initialize(self,filename,status,action)
+  subroutine hdf_open_file(self,filename,status,action)
     !< Opens hdf5 file
-
     class(hdf5_file), intent(inout)    :: self
     character(*), intent(in)           :: filename
     character(*), intent(in), optional :: status
@@ -81,14 +90,17 @@ contains
     integer :: ierr
 
     !> Initialize FORTRAN interface.
-    call h5open_f(ierr)
+    if(.not.self%is_init) call h5open_f(ierr)
     if (ierr /= 0 ) error stop 'Error: HDF5 library initialize Failed!'
+    self%is_init = .TRUE.
+
+    self%filename = filename
 
     lstatus = 'old'
-    if(present(status)) lstatus = toLower(status)
+    if(present(status)) lstatus = to_lower(status)
 
     laction = 'rw'
-    if(present(action)) laction = toLower(action)
+    if(present(action)) laction = to_lower(action)
 
     select case(lstatus)
       case ('old')
@@ -106,20 +118,66 @@ contains
         error stop 'Error: Unsupported status ->'// lstatus
     endselect
 
-  end subroutine hdf_initialize
+  end subroutine hdf_open_file
   !=============================================================================
-  subroutine hdf_finalize(self)
+  subroutine hdf_close_file(self, finalize)
     class(hdf5_file), intent(in) :: self
+    logical, intent(in), optional:: finalize
 
     integer :: ierr
 
     !> close hdf5 file
     call h5fclose_f(self%lid, ierr)
+    if(ierr /=0) error stop "Unable to close HDF5 file: "//self%filename
 
     !>  Close FORTRAN interface.
-    call h5close_f(ierr)
+    if(present(finalize) .and. finalize) call h5close_f(ierr)
+    if(ierr /=0) error stop "Unable to close HDF5 fortran interface!"
 
-  end subroutine hdf_finalize
+  end subroutine hdf_close_file
+  !=============================================================================
+  subroutine hdf_open_group(self,gname)
+    class(hdf5_file), intent(inout) :: self
+    character(*), intent(in)        :: gname
+
+    integer :: ierr
+
+    call h5gopen_f(self%lid, gname, self%gid, ierr)
+    self%glid = self%lid
+    self%lid  = self%gid
+
+  end subroutine hdf_open_group
+  !=============================================================================
+  subroutine hdf_close_group(self)
+    class(hdf5_file), intent(inout) :: self
+
+    integer :: ierr
+
+    call h5gclose_f(self%gid, ierr)
+    self%lid = self%glid
+
+  end subroutine hdf_close_group
+  !=============================================================================
+  function hdf_exist(self, name) result(exist)
+    class(hdf5_file), intent(in) :: self
+    character(*), intent(in) :: name
+    logical :: exist
+
+    integer :: ierr
+
+    call h5lexists_f(self%lid, name, exist, ierr)
+
+  end function hdf_exist
+  !=============================================================================
+  subroutine hdf_delete(self,name)
+    class(hdf5_file), intent(in) :: self
+    character(*), intent(in) :: name
+
+    integer :: ierr
+    
+    call h5ldelete_f(self%lid, name, ierr)
+
+  end subroutine hdf_delete
   !=============================================================================
   subroutine hdf_add_group(self, gname)
 
@@ -153,27 +211,7 @@ contains
 
   end subroutine hdf_add_group
   !=============================================================================
-  subroutine hdf_open_group(self,gname)
-    class(hdf5_file), intent(inout) :: self
-    character(*), intent(in)        :: gname
 
-    integer :: ierr
-
-    call h5gopen_f(self%lid, gname, self%gid, ierr)
-    self%glid = self%lid
-    self%lid  = self%gid
-
-  end subroutine hdf_open_group
-  !=============================================================================
-  subroutine hdf_close_group(self)
-    class(hdf5_file), intent(inout) :: self
-
-    integer :: ierr
-
-    call h5gclose_f(self%gid, ierr)
-    self%lid = self%glid
-
-  end subroutine hdf_close_group
   !=============================================================================
   subroutine hdf_add_int(self,dname,value)
     class(hdf5_file), intent(in) :: self
@@ -314,6 +352,34 @@ contains
 
   end subroutine hdf_add_real3d
   !=============================================================================
+  subroutine hdf_add_string(self,dname,value)
+    class(hdf5_file), intent(in) :: self
+    character(*), intent(in)     :: dname
+    character(*), intent(in)     :: value
+
+    integer         :: ierr
+
+    call self%add(dname)
+    call h5ltmake_dataset_string_f(self%lid, dname, value, ierr)
+
+  end subroutine hdf_add_string
+  !=============================================================================
+  subroutine hdf_get_string(self,dname,value)
+    class(hdf5_file), intent(in)     :: self
+    character(*), intent(in)         :: dname
+    character(:), intent(out), allocatable :: value
+
+    integer(HSIZE_T) :: dims(1)
+    integer(SIZE_T)  :: dsize
+    integer :: ierr, dtype
+
+    call h5ltget_dataset_info_f(self%lid, dname, dims, dtype, dsize, ierr)
+
+    allocate(character(dsize-1) :: value) !< string length = dsize -1
+    call h5ltread_dataset_string_f(self%lid, dname, value, ierr)
+
+  end subroutine hdf_get_string
+  !=============================================================================
   subroutine hdf_get_int(self, dname, value)
 
     class(hdf5_file), intent(in)     :: self
@@ -340,26 +406,16 @@ contains
     character(*), intent(in)         :: dname
     integer, intent(out),allocatable :: value(:)
 
-    integer(SIZE_T) :: dims(1),maxdim(1)
-    integer(HID_T)  :: set_id,space_id
-    integer :: ierr
+    integer(HSIZE_T) :: dims(1)
+    integer(SIZE_T)  :: dsize
+    integer :: ierr, dtype
 
-    ! open dataset
-    call h5dopen_f(self%lid, dname, set_id, ierr)
-
-    ! get dataspace
-    call h5dget_space_f(set_id, space_id, ierr)
-
-    ! get dims
-    call h5sget_simple_extent_dims_f(space_id, dims, maxdim, ierr)
+    call h5ltget_dataset_info_f(self%lid, dname, dims, dtype, dsize, ierr)
 
     allocate(value(dims(1)))
 
-    ! read dataset
-    call h5dread_f(set_id, h5kind_to_type(kind(value),H5_INTEGER_KIND), value,dims, ierr)
-
-    ! close dataset
-    call h5dclose_f(set_id, ierr)
+    call h5ltread_dataset_f(self%lid, dname, &
+         & h5kind_to_type(kind(value),H5_INTEGER_KIND), value, dims,  ierr)
 
   end subroutine hdf_get_int1d
   !=============================================================================
@@ -369,27 +425,16 @@ contains
     character(*), intent(in)         :: dname
     integer, intent(out),allocatable :: value(:,:)
 
-    integer(SIZE_T) :: dims(2),maxdim(2)
-    integer(HID_T)  :: set_id, space_id
-    integer :: ierr
+    integer(HSIZE_T) :: dims(2)
+    integer(SIZE_T)  :: dsize
+    integer :: ierr, dtype
 
-    ! open dataset
-    call h5dopen_f(self%lid, dname, set_id, ierr)
-
-    ! get dataspace
-    call h5dget_space_f(set_id, space_id, ierr)
-
-    ! get dims
-    call h5sget_simple_extent_dims_f(space_id, dims, maxdim, ierr)
+    call h5ltget_dataset_info_f(self%lid, dname, dims, dtype, dsize, ierr)
 
     allocate(value(dims(1),dims(2)))
 
-    ! read dataset
-    call h5dread_f(set_id, h5kind_to_type(kind(value),H5_INTEGER_KIND), value,dims, ierr)
-
-    ! close dataset
-    call h5dclose_f(set_id, ierr)
-
+    call h5ltread_dataset_f(self%lid, dname, &
+         & h5kind_to_type(kind(value),H5_INTEGER_KIND), value, dims,  ierr)
 
   end subroutine hdf_get_int2d
   !=============================================================================
@@ -399,27 +444,16 @@ contains
     character(*), intent(in)         :: dname
     integer, intent(out),allocatable :: value(:,:,:)
 
-    integer(SIZE_T) :: dims(3),maxdim(3)
-    integer(HID_T)  :: set_id, space_id
-    integer :: ierr
+    integer(HSIZE_T) :: dims(3)
+    integer(SIZE_T)  :: dsize
+    integer :: ierr, dtype
 
-    ! open dataset
-    call h5dopen_f(self%lid, dname, set_id, ierr)
-
-    ! get dataspace
-    call h5dget_space_f(set_id, space_id, ierr)
-
-    ! get dims
-    call h5sget_simple_extent_dims_f(space_id, dims, maxdim, ierr)
+    call h5ltget_dataset_info_f(self%lid, dname, dims, dtype, dsize, ierr)
 
     allocate(value(dims(1),dims(2),dims(3)))
 
-    ! read dataset
-    call h5dread_f(set_id, h5kind_to_type(kind(value),H5_INTEGER_KIND), value,dims, ierr)
-
-    ! close dataset
-    call h5dclose_f(set_id, ierr)
-
+    call h5ltread_dataset_f(self%lid, dname, &
+         & h5kind_to_type(kind(value),H5_INTEGER_KIND), value, dims,  ierr)
 
   end subroutine hdf_get_int3d
   !=============================================================================
@@ -436,7 +470,8 @@ contains
     call h5dopen_f(self%lid, dname, set_id, ierr)
 
     ! read dataset
-    call h5dread_f(set_id, h5kind_to_type(kind(value),H5_REAL_KIND), value,int(shape(value),HSIZE_T), ierr)
+    call h5dread_f(set_id, h5kind_to_type(kind(value),H5_REAL_KIND),&
+                 & value,int(shape(value),HSIZE_T), ierr)
 
     ! close dataset
     call h5dclose_f(set_id, ierr)
@@ -449,26 +484,16 @@ contains
     character(*), intent(in)         :: dname
     real, intent(out),allocatable :: value(:)
 
-    integer(SIZE_T) :: dims(1),maxdim(1)
-    integer(HID_T)  :: set_id,space_id
-    integer :: ierr
+    integer(HSIZE_T) :: dims(1)
+    integer(SIZE_T)  :: dsize
+    integer :: ierr, dtype
 
-    ! open dataset
-    call h5dopen_f(self%lid, dname, set_id, ierr)
-
-    ! get dataspace
-    call h5dget_space_f(set_id, space_id, ierr)
-
-    ! get dims
-    call h5sget_simple_extent_dims_f(space_id, dims, maxdim, ierr)
+    call h5ltget_dataset_info_f(self%lid, dname, dims, dtype, dsize, ierr)
 
     allocate(value(dims(1)))
 
-    ! read dataset
-    call h5dread_f(set_id, h5kind_to_type(kind(value),H5_REAL_KIND), value,dims, ierr)
-
-    ! close dataset
-    call h5dclose_f(set_id, ierr)
+    call h5ltread_dataset_f(self%lid, dname, &
+         & h5kind_to_type(kind(value),H5_REAL_KIND), value, dims,  ierr)
 
   end subroutine hdf_get_real1d
   !=============================================================================
@@ -478,27 +503,16 @@ contains
     character(*), intent(in)         :: dname
     real, intent(out),allocatable :: value(:,:)
 
-    integer(SIZE_T) :: dims(2),maxdim(2)
-    integer(HID_T)  :: set_id, space_id
-    integer :: ierr
+    integer(HSIZE_T) :: dims(2)
+    integer(SIZE_T)  :: dsize
+    integer :: ierr, dtype
 
-    ! open dataset
-    call h5dopen_f(self%lid, dname, set_id, ierr)
-
-    ! get dataspace
-    call h5dget_space_f(set_id, space_id, ierr)
-
-    ! get dims
-    call h5sget_simple_extent_dims_f(space_id, dims, maxdim, ierr)
+    call h5ltget_dataset_info_f(self%lid, dname, dims, dtype, dsize, ierr)
 
     allocate(value(dims(1),dims(2)))
 
-    ! read dataset
-    call h5dread_f(set_id, h5kind_to_type(kind(value),H5_REAL_KIND), value,dims, ierr)
-
-    ! close dataset
-    call h5dclose_f(set_id, ierr)
-
+    call h5ltread_dataset_f(self%lid, dname, &
+         & h5kind_to_type(kind(value),H5_REAL_KIND), value, dims,  ierr)
 
   end subroutine hdf_get_real2d
   !=============================================================================
@@ -508,47 +522,36 @@ contains
     character(*), intent(in)         :: dname
     real, intent(out),allocatable :: value(:,:,:)
 
-    integer(SIZE_T) :: dims(3),maxdim(3)
-    integer(HID_T)  :: set_id, space_id
-    integer :: ierr
+    integer(HSIZE_T) :: dims(3)
+    integer(SIZE_T)  :: dsize
+    integer :: ierr, dtype
 
-    ! open dataset
-    call h5dopen_f(self%lid, dname, set_id, ierr)
-
-    ! get dataspace
-    call h5dget_space_f(set_id, space_id, ierr)
-
-    ! get dims
-    call h5sget_simple_extent_dims_f(space_id, dims, maxdim, ierr)
+    call h5ltget_dataset_info_f(self%lid, dname, dims, dtype, dsize, ierr)
 
     allocate(value(dims(1),dims(2),dims(3)))
 
-    ! read dataset
-    call h5dread_f(set_id, h5kind_to_type(kind(value),H5_REAL_KIND), value,dims, ierr)
-
-    ! close dataset
-    call h5dclose_f(set_id, ierr)
-
+    call h5ltread_dataset_f(self%lid, dname, &
+         & h5kind_to_type(kind(value),H5_REAL_KIND), value, dims,  ierr)
 
   end subroutine hdf_get_real3d
 
 !----- Helper functions
 
-  elemental function toLower(str)
+  elemental function to_lower(str)
   ! can be trivially extended to non-ASCII
     character(*), intent(in) :: str
-    character(len(str)) :: toLower
+    character(len(str)) :: to_lower
     character(*), parameter :: lower="abcdefghijklmnopqrstuvwxyz", &
                                upper="ABCDEFGHIJKLMNOPQRSTUVWXYZ"
     integer :: i,j
 
-    toLower = str
+    to_lower = str
 
     do concurrent (i = 1:len(str))
       j = index(upper,str(i:i))
-      if (j > 0) toLower(i:i) = lower(j:j)
+      if (j > 0) to_lower(i:i) = lower(j:j)
     end do
 
-  end function toLower
+  end function to_lower
 
 end module hdf5_interface
