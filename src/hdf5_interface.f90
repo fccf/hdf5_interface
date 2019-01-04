@@ -136,6 +136,7 @@ contains
     !>  Close FORTRAN interface.
     if(present(finalize) .and. finalize) call h5close_f(ierr)
     if(ierr /=0) error stop "Unable to close HDF5 fortran interface!"
+    this%is_init = .FALSE.
 
   end subroutine hdf_close_file
   !=============================================================================
